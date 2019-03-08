@@ -1,0 +1,124 @@
+Timer unit: 1e-06 s
+
+Total time: 14278.7 s
+File: /home/hrlee/.conda/envs/alchemlyb/lib/python3.7/site-packages/alchemlyb/parsing/gmx.py
+Function: extract_dHdl at line 82
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    82                                           def extract_dHdl(xvg, T):
+    83                                               """Return gradients `dH/dl` from a Hamiltonian differences XVG file.
+    84                                           
+    85                                               Parameters
+    86                                               ----------
+    87                                               xvg : str
+    88                                                   Path to XVG file to extract data from.
+    89                                           
+    90                                               Returns
+    91                                               -------
+    92                                               dH/dl : Series
+    93                                                   dH/dl as a function of time for this lambda window.
+    94                                           
+    95                                               """
+    96                                               beta = 1/(k_b * T)
+    97     25089      54164.0      2.2      0.0  
+    98                                               state, lambdas, statevec = _extract_state(xvg)
+    99     25089 1262148551.0  50306.8      8.8  
+   100                                               # extract a DataFrame from XVG data
+   101                                               df = _extract_dataframe(xvg)
+   102     25089 12611389601.0 502666.1     88.3      
+   103                                               times = df[df.columns[0]]
+   104     25089    6063967.0    241.7      0.0  
+   105                                               # want to grab only dH/dl columns
+   106                                               dHcols = []
+   107     25089      39891.0      1.6      0.0      for l in lambdas:
+   108     74883      94138.0      1.3      0.0          dHcols.extend([col for col in df.columns if (l in col)])
+   109     49794    2671175.0     53.6      0.0  
+   110                                               dHdl = df[dHcols]
+   111     25089   41106488.0   1638.4      0.3  
+   112                                               # make dimensionless
+   113                                               dHdl = beta * dHdl
+   114     25089   70221360.0   2798.9      0.5  
+   115                                               # rename columns to not include the word 'lambda', since we use this for
+   116                                               # index below
+   117                                               cols = [l.split('-')[0] for l in lambdas]
+   118     25089     151601.0      6.0      0.0  
+   119                                               dHdl = pd.DataFrame(dHdl.values, columns=cols,
+   120     25089     982299.0     39.2      0.0                          index=pd.Float64Index(times.values, name='time'))
+   121     25089   16290069.0    649.3      0.1  
+   122                                               # create columns for each lambda, indicating state each row sampled from
+   123                                               for i, l in enumerate(lambdas):
+   124     74883     170344.0      2.3      0.0          try:
+   125     49794      43822.0      0.9      0.0              dHdl[l] = statevec[i]
+   126     49794   46983311.0    943.6      0.3          except TypeError:
+   127       384        444.0      1.2      0.0              dHdl[l] = statevec
+   128       384     353330.0    920.1      0.0  
+   129                                               # set up new multi-index
+   130                                               newind = ['time'] + lambdas
+   131     25089      35022.0      1.4      0.0      dHdl= dHdl.reset_index().set_index(newind)
+   132     25089  218409123.0   8705.4      1.5  
+   133                                               dHdl.name='dH/dl'
+   134     25089    1502834.0     59.9      0.0  
+   135                                               return dHdl
+
+Total time: 11287.7 s
+File: /home/hrlee/.conda/envs/alchemlyb/lib/python3.7/site-packages/alchemlyb/parsing/gmx.py
+Function: _extract_dataframe at line 153
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   153                                               """Extract a DataFrame from XVG data.
+
+Total time: 15311.5 s
+File: analysis.nodask.py
+Function: get_dHdl_XVG at line 41
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    41                                           @profile
+    42                                           def get_dHdl_XVG(sim, lower=None, upper=None, step=None):
+    43       106         97.0      0.9      0.0      dHdls = []
+    44     25195  811628590.0  32213.9      5.3      for xvg in sim['WORK/dhdl/'].glob('*.xvg'):
+    45     25089 14280714799.0 569202.2     93.3          dHdls.append(extract_dHdl(xvg.abspath, T=T))
+    46       106  178900779.0 1687743.2      1.2      return slicing(pd.concat(dHdls).sort_index(0), 
+    47       106        202.0      1.9      0.0                     lower=lower, 
+    48       106         57.0      0.5      0.0                     upper=upper, 
+    49       106   40263036.0 379840.0      0.3                     step=step)
+
+Total time: 15312.3 s
+File: analysis.nodask.py
+Function: get_dHdl at line 52
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    52                                           @profile
+    53                                           def get_dHdl(sim, lower=None, upper=None, step=None):
+    54       106         64.0      0.6      0.0      try:
+    55       106     144936.0   1367.3      0.0          dHdl = sim.data.retrieve('dHdl')
+    56                                                   if dHdl is None:
+    57                                                       dHdl = get_dHdl_XVG(sim, lower=lower, upper=upper, step=step)
+    58                                                   dHdl = slicing(dHdl.sort_index(0), 
+    59                                                                  lower=lower, 
+    60                                                                  upper=upper, 
+    61                                                                  step=step)
+    62       106        159.0      1.5      0.0      except:
+    63                                                   # THIS WILL NOT STORE THE VALUE FOR LATER USE SO YOU SHOULD REALLY
+    64                                                   # CONTINUOUSLY UPDATE THE dHdl DATA IN THE SIMS
+    65       106 15312112756.0 144453893.9    100.0          dHdl = get_dHdl_XVG(sim, lower=lower, upper=upper, step=step) 
+    66       106        195.0      1.8      0.0      return dHdl
+
+Total time: 0.296462 s
+File: analysis.nodask.py
+Function: get_TI at line 69
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    69                                           @profile
+    70                                           def get_TI(dHdl):
+    71         3     286438.0  95479.3     96.6      ti = TI().fit(dHdl)
+    72         3        135.0     45.0      0.0      df = pd.DataFrame({'DG': k_b * T * ti.delta_f_.values[0,-1:], 
+    73         3         93.0     31.0      0.0                         'std': k_b * T * ti.d_delta_f_.values[0,-1:]},
+    74         3       9792.0   3264.0      3.3                        columns=['DG', 'std'])
+    75         3          4.0      1.3      0.0      return df
+
+
