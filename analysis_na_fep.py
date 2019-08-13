@@ -77,10 +77,10 @@ def get_dHdl_XVG_delayed(xvg):
         xvg.abspath, s1-s0, s1, s0))
     #print(msg)
     logging.info(msg)
-    dHdl = extract_dHdl_v3(xvg.abspath, T=T)
+    dHdl = extract_dHdl(xvg.abspath, T=T)
     s2 = time.time()
     msg = ("{},{},{},{},{},{}".format('get_dHdl_XVG_delayed',
-        '_extract_dHdl_v3', xvg.abspath, s2-s1, s1, s0))
+        '_extract_dHdl', xvg.abspath, s2-s1, s1, s0))
     #print(msg)
     logging.info(msg)
     return dHdl
