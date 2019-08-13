@@ -1,18 +1,22 @@
+import logging
+import time
+import tables 
+import sys
+import os
+import io, itertools
+import pandas as pd
+import numpy as np
+import sympy
+from dask_jobqueue import SLURMCluster
+from dask.distributed import Client, LocalCluster
+from dask import delayed
 import alchemlyb
 import mdsynthesis as mds
-from dask.delayed import delayed
-import os
-import os.path
-import pandas as pd
 from alchemlyb.preprocessing import slicing
 from alchemlyb.parsing.gmx import extract_dHdl
-import sympy
 from alchemlyb.estimators import TI
 
-try:
-	BASEPATH = os.environ['FEP_BASEPATH']
-except KeyError:
-	BASEPATH = "/"
+logging.basicConfig(filename="analysis.get_dHdl_optimized.log", level=logging.INFO)
 
 T = 310
 k_b = 8.3144621E-3
@@ -34,26 +38,72 @@ Z_rr = sympy.Integral(f_r, (r, 0, sympy.oo))
 
 Z_rr.subs(subs).evalf()
 Z_r = 2 * sympy.pi * Z_rtheta * Z_rr
+
 Z_r.subs(subs).evalf()
 
 DG_r = - 1/beta * sympy.ln(V/Z_r)
+
 DG_r_unbind = DG_r.subs(subs).evalf()
+
 DG_r_unbind = -17.8435335231149 # why keep computing the same thing
 
-def get_dHdl_XVG(sim, lower=None, upper=None, step=None):
-    dHdls = []
-    for xvg in sim['WORK/dhdl/'].glob('*.xvg'):
-        dHdls.append(extract_dHdl(xvg.abspath, T=T))
-    return slicing(pd.concat(dHdls).sort_index(0), 
-                   lower=lower, 
-                   upper=upper, 
-                   step=step)
+
+def bread(x, bsize=8192, stopat=None):
+        b = bytearray(bsize)
+        f = io.open(x, "rb")
+        for i in itertools.count():
+            numread = f.readinto(b)
+            if not numread:
+                break
+            if stopat and stopat < i:
+                break
+        return
+
+
+def get_dHdl_XVG_delayed(xvg):
+    # TODO
+    # apply extract_dHdl_updated3
+    # merge get_header, extract_state
+    # cython for this?
+    # don't forget cache read by bytesio
+    fsize = os.path.getsize(xvg.abspath)
+    bufsize = 8192
+    stopat = fsize / bufsize / 2
+
+    s0 = time.time()
+    bread(xvg.abspath, bsize=bufsize, stopat=stopat)
+    s1 = time.time()
+    msg = ("{},{},{},{},{},{}".format('get_dHdl_XVG_delayed', 'bread',
+        xvg.abspath, s1-s0, s1, s0))
+    #print(msg)
+    logging.info(msg)
+    dHdl = extract_dHdl_v3(xvg.abspath, T=T)
+    s2 = time.time()
+    msg = ("{},{},{},{},{},{}".format('get_dHdl_XVG_delayed',
+        '_extract_dHdl_v3', xvg.abspath, s2-s1, s1, s0))
+    #print(msg)
+    logging.info(msg)
+    return dHdl
+
+
+def slicing_delayed(dhdls, lower=None, upper=None, step=None):
+   
+    return slicing(dhdls.sort_index(0), lower=lower, upper=upper, step=step)
+
 
 def get_dHdl(sim, lower=None, upper=None, step=None):
     try:
+        s = time.time()
         dHdl = sim.data.retrieve('dHdl')
+        e = time.time()
         if dHdl is None:
-            dHdl = get_dHdl_XVG(sim, lower=lower, upper=upper, step=step)
+            dHdl =
+            delayed(slicing_delayed)(delayed(pd.concat)([delayed(get_dHdl_XVG_delayed)(xvg)
+                for xvg in sim['WORK/dhdl/'].glob('*.xvg')]), lower=lower,
+                upper=upper, step=step)
+
+        else:
+            logging.info("get_dHdl,hdf5_read,{},{},{},{}".format(sim.name, e - s, s, e))
         dHdl = slicing(dHdl.sort_index(0), 
                        lower=lower, 
                        upper=upper, 
@@ -61,7 +111,11 @@ def get_dHdl(sim, lower=None, upper=None, step=None):
     except:
         # THIS WILL NOT STORE THE VALUE FOR LATER USE SO YOU SHOULD REALLY
         # CONTINUOUSLY UPDATE THE dHdl DATA IN THE SIMS
-        dHdl = get_dHdl_XVG(sim, lower=lower, upper=upper, step=step) 
+        dHdl =
+        delayed(slicing_delayed)(delayed(pd.concat)([delayed(get_dHdl_XVG_delayed)(xvg)
+            for xvg in sim['WORK/dhdl/'].glob('*.xvg')]), lower=lower,
+            upper=upper, step=step)
+
     return dHdl
 
 
@@ -72,14 +126,28 @@ def get_TI(dHdl):
                       columns=['DG', 'std'])
     return df
 
+
 if __name__ == "__main__":
-    from dask.distributed import Client, LocalCluster
-    cl = Client()
+
+    cluster = SLURMCluster(cores=24,
+            processes=24,
+            memory='120GB',
+            walltime='00:59:00',
+            interface='ib0',
+            queue='compute',
+            death_timeout=60,
+            local_directory='/scratch/$USER/$SLURM_JOB_ID')
+    cluster.start_workers(96)
+    cl = Client(cluster)
+    #cl = LocalCluster()
     
-    ionsegs = {'repulsion_to_ghost': mds.discover(BASEPATH + '/Projects/Transporters/SYSTEMS/Na/repulsion_to_ghost/production1/'),
-    	   'ghost_to_ion': mds.discover(BASEPATH + '/Projects/Transporters/SYSTEMS/Na/ghost_to_ion/production1/')}
+    ionsegs = {'repulsion_to_ghost':
+            mds.discover('/pylon5/mc3bggp/beckstei/Projects/Transporters/SYSTEMS/Na/repulsion_to_ghost/production1/'),
+           'ghost_to_ion':
+           mds.discover('/pylon5/mc3bggp/beckstei/Projects/Transporters/SYSTEMS/Na/ghost_to_ion/production1/')}
     
     dHdls = {}
+    """
     for seg in ionsegs:
         dHdls[seg] = [delayed(get_dHdl, pure=True)(sim, lower=5000, step=200)
     				for sim in ionsegs[seg]]
@@ -88,6 +156,7 @@ if __name__ == "__main__":
     for seg in ionsegs:
         iondg_d = delayed(get_TI)(delayed(pd.concat)(dHdls[seg]))
         L_ionDG[seg] = cl.compute(iondg_d)
+    
     ionDG = cl.gather(L_ionDG)
     
     dfs = []
@@ -99,11 +168,12 @@ if __name__ == "__main__":
     ionDG = pd.concat(dfs)
     ionDG = ionDG.set_index('segment')
     ionDG.loc['ghost_to_ion', 'DG'] = -1 * ionDG.loc['ghost_to_ion', 'DG']
-    topdir = mds.Tree(BASEPATH + '/Projects/Transporters/NapA/SYSTEMS/ionbinding/na/')
+    """
+    topdir = mds.Tree('/oasis/scratch/comet/hrlee/temp_project/alchemlyb/')
     
-    segs_s2if = {'unrestrained_to_restrained': mds.discover(topdir['if/S2/unrestrained_to_restrained/production1']),
-    	     'restrained_to_repulsion': mds.discover(topdir['if/S2/restrained_to_repulsion/production1/']),
-    	     'repulsion_to_ghostrepulsion': mds.discover(topdir['if/S2/repulsion_to_ghostrepulsion/production1/'])}
+    segs_s2if = {'unrestrained_to_restrained': mds.discover(topdir['unrestrained_to_restrained/production1']),
+    	     'restrained_to_repulsion': mds.discover(topdir['restrained_to_repulsion/production1/']),
+    	     'repulsion_to_ghostrepulsion': mds.discover(topdir['repulsion_to_ghostrepulsion/production1/'])}
     """
     segs_s4if = {'unrestrained_to_restrained': mds.discover(topdir['if/S4/unrestrained_to_restrained/production1']),
     	     'restrained_to_repulsion': mds.discover(topdir['if/S4/restrained_to_repulsion/production1/']),
@@ -123,12 +193,14 @@ if __name__ == "__main__":
     	's4of': segs_s4of}
     """
     
+    
     L_DG = {} 
     
     for state in segs:
         ddgs = {}
         for seg in segs[state]:
-           dHdls = delayed(pd.concat)([delayed(get_dHdl)(sim, lower=5000, step=200) for sim in segs[state][seg]])
+           #dHdls = delayed(pd.concat)([delayed(get_dHdl)(sim, lower=5000, step=200) for sim in segs[state][seg]])
+           dHdls = delayed(pd.concat)([get_dHdl(sim, lower=5000, step=200) for sim in segs[state][seg]])
            ddgs[seg] = delayed(get_TI)(dHdls)
         L_DG[state] = {seg: cl.compute(ddgs[seg]) for seg in segs[state]}
     
